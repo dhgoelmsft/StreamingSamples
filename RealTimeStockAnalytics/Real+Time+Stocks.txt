@@ -1,0 +1,64 @@
+
+%%configure -f
+{
+    "conf": {
+        "spark.jars.packages": "org.apache.spark:spark-sql-kafka-0-10_2.11:2.3.0,", 
+        "spark.jars.excludes": "org.scala-lang:scala-reflect,org.apache.spark:spark-tags_2.11"
+    }
+}
+
+// Provide your Kafka broker endpoint (including port #)
+
+val inputDf = (spark.readStream
+  .format("kafka")
+  .option("kafka.bootstrap.servers", "")
+  .option("subscribe", "stockVals")
+  .option("startingOffsets", "earliest") 
+  .load()
+  )
+
+import org.apache.spark.sql._
+import org.apache.spark.sql.types._
+import org.apache.spark.sql.functions._
+
+val stockJsonDf = inputDf.selectExpr("CAST(value AS STRING)")
+val stockSchema = (new StructType()
+  .add("symbol", DataTypes.StringType)
+  .add("time", DataTypes.StringType)
+  .add("price", DataTypes.FloatType)
+  .add("size", DataTypes.IntegerType)
+  )
+val stockNestedJsonDf = stockJsonDf.select(from_json($"value", stockSchema).as("stockRecord"))
+val stockFlatDf = stockNestedJsonDf.selectExpr("stockRecord.symbol", "stockRecord.time", "stockRecord.price", "stockRecord.size")
+val stockDf = stockFlatDf.withColumn("time", from_unixtime($"time"/1000))
+
+(stockDf.writeStream
+  .outputMode("append")
+  .format("console")
+  .start()
+  .awaitTermination(10000)
+)
+
+(stockDf.groupBy(
+  window($"time", "4 seconds"),
+  $"symbol"
+  ).agg(max($"price"), min($"price"))
+  .writeStream
+  .format("console")
+  .outputMode("complete")
+  .start()
+  .awaitTermination(30000)
+)
+
+(stockDf.groupBy(
+  window($"time", "4 seconds"),
+  $"symbol"
+).agg(collect_list($"price"))
+  .writeStream
+  .format("console")
+  .outputMode("complete")
+  .start()
+  .awaitTermination(30000)
+)
+
+
